@@ -1,3 +1,11 @@
 .env
 node_modules
 *.DS_Store
+
+# Large binaries
+*.psd
+*.ai
+*.tiff
+*.mov
+*.mp4
+*.zip
