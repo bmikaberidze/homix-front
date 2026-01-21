@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Page, Message, OwnerChat, ScheduledVisit, Property } from '@/app/types';
 import { sampleProperties } from '@/app/data';
 import { getCurrentTime, matchPropertiesFromResponse } from '@/app/utils';
+import { sendChatMessage } from '@/app/api/chat';
 import PropertyCard from './PropertyCard';
 import ScheduleVisitDialog from './ScheduleVisitDialog';
 import { MessageCircle, Send, Home as HomeIcon, User, Building2 } from 'lucide-react';
@@ -103,6 +104,19 @@ export default function ConversationPageNew({
   
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasInitialized = useRef(false);
+  const sessionIdRef = useRef<string>('');
+  const requestControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    sessionIdRef.current = 'default';
+    localStorage.setItem('homix_chat_session_id', 'default');
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      requestControllerRef.current?.abort();
+    };
+  }, []);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -132,29 +146,31 @@ export default function ConversationPageNew({
 
   // AI Response Processing
   const processAIResponse = async (messageText: string) => {
+    requestControllerRef.current?.abort();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
+
     try {
-      // Try Gradio API (will fallback on error)
-      // const { Client } = await import('@gradio/client');
-      // const client = await Client.connect("bekalius/farmers-agent-ai");
-      // const result = await client.predict("/predict", { text: messageText });
-      // const aiText = result.data[0];
-      
-      // FALLBACK: Local keyword matching (ALWAYS works)
-      const properties = matchPropertiesFromResponse('', messageText);
-      
+      const { text } = await sendChatMessage(messageText, sessionIdRef.current, controller.signal);
+      const properties = matchPropertiesFromResponse(text, messageText);
+
       const aiResponse: Message = {
         id: (Date.now() + 1).toString(),
         type: 'ai',
-        content: properties.length > 0 
-          ? 'Great! I found these properties for you:' 
-          : "I'm sorry, I couldn't find matching properties. Try searching for apartments, houses, or specific locations like 'New York' or 'Miami'.",
+        content: text,
         timestamp: getCurrentTime(),
         properties: properties.length > 0 ? properties : undefined,
       };
 
       setGeneralMessages(prev => [...prev, aiResponse]);
-      setIsTyping(false);
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return;
+      }
+
+      console.error('Chat API error:', error);
+      toast.error('Chat service is unavailable. Showing fallback results.');
+
       // Fallback on error
       const properties = matchPropertiesFromResponse('', messageText);
       const aiResponse: Message = {
@@ -165,7 +181,10 @@ export default function ConversationPageNew({
         properties: properties.length > 0 ? properties : undefined,
       };
       setGeneralMessages(prev => [...prev, aiResponse]);
-      setIsTyping(false);
+    } finally {
+      if (requestControllerRef.current === controller) {
+        setIsTyping(false);
+      }
     }
   };
 
@@ -189,9 +208,7 @@ export default function ConversationPageNew({
       setInputValue('');
       setIsTyping(true);
       
-      setTimeout(() => {
-        processAIResponse(messageText);
-      }, 1000);
+      await processAIResponse(messageText);
     } else if (activeOwnerChat) {
       // OWNER CHAT
       const updatedChat = {
